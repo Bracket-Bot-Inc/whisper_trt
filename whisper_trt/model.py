@@ -21,7 +21,7 @@
 
 import argparse
 from whisper import load_model
-from whisper.model import LayerNorm, Linear, Tensor, ModelDimensions, sinusoids, Whisper
+from whisper.model import LayerNorm, Linear, Tensor, ModelDimensions, sinusoids, Whisper, disable_sdpa
 from whisper.tokenizer import Tokenizer
 import whisper.audio
 from typing import Optional
@@ -152,7 +152,7 @@ class WhisperTRT(nn.Module):
         return self.decoder(tokens, self.encoder(mel))
     
     @torch.no_grad()
-    def transcribe(self, audio : str | np.ndarray):
+    def transcribe(self, audio : str | np.ndarray, max_tokens: int | None = None):
 
         if isinstance(audio, str):
             audio = whisper.audio.load_audio(audio)
@@ -168,7 +168,8 @@ class WhisperTRT(nn.Module):
             self.tokenizer.sot
         ]).cuda()[None, ...]
 
-        for i in range(self.dims.n_text_ctx):
+        max_iterations = max_tokens if max_tokens is not None else self.dims.n_text_ctx
+        for i in range(max_iterations):
             logits = self.logits(tokens, audio_features)
             next_tokens = logits.argmax(dim=-1)
             tokens = torch.cat([tokens, next_tokens[:, -1:]], dim=-1)
@@ -201,33 +202,35 @@ class WhisperTRTBuilder:
 
         x = torch.randn(1, 1, dims.n_text_state).cuda()
         xa = torch.randn(1, dims.n_audio_ctx, dims.n_audio_state).cuda()
-        mask = torch.randn(dims.n_text_ctx, dims.n_text_ctx).cuda()
+        mask = model.decoder.mask.cuda()
 
-        engine = torch2trt.torch2trt(
-            decoder_blocks_module, 
-            [x, xa, mask], 
-            use_onnx=True, 
-            min_shapes=[
-                (1, 1, dims.n_text_state),
-                (1, 1, dims.n_audio_state),
-                (dims.n_text_ctx, dims.n_text_ctx)
-            ],
-            opt_shapes=[
-                (1, 1, dims.n_text_state),
-                (1, dims.n_audio_ctx, dims.n_audio_state),
-                (dims.n_text_ctx, dims.n_text_ctx)
-            ],
-            max_shapes=[
-                (1, dims.n_text_ctx, dims.n_text_state),
-                (1, dims.n_audio_ctx, dims.n_audio_state),
-                (dims.n_text_ctx, dims.n_text_ctx)
-            ],
-            input_names=["x", "xa", "mask"],
-            output_names=["output"],
-            max_workspace_size=cls.max_workspace_size,
-            fp16_mode=cls.fp16_mode,
-            log_level=tensorrt.Logger.VERBOSE if cls.verbose else tensorrt.Logger.ERROR,
-        )
+        # Disable SDPA to ensure mask is properly handled during ONNX export
+        with disable_sdpa():
+            engine = torch2trt.torch2trt(
+                decoder_blocks_module, 
+                [x, xa, mask], 
+                use_onnx=True, 
+                min_shapes=[
+                    (1, 1, dims.n_text_state),
+                    (1, 1, dims.n_audio_state),
+                    (dims.n_text_ctx, dims.n_text_ctx)
+                ],
+                opt_shapes=[
+                    (1, 1, dims.n_text_state),
+                    (1, dims.n_audio_ctx, dims.n_audio_state),
+                    (dims.n_text_ctx, dims.n_text_ctx)
+                ],
+                max_shapes=[
+                    (1, dims.n_text_ctx, dims.n_text_state),
+                    (1, dims.n_audio_ctx, dims.n_audio_state),
+                    (dims.n_text_ctx, dims.n_text_ctx)
+                ],
+                input_names=["x", "xa", "mask"],
+                output_names=["output"],
+                max_workspace_size=cls.max_workspace_size,
+                fp16_mode=cls.fp16_mode,
+                log_level=tensorrt.Logger.INTERNAL_ERROR,  # Suppress mask warnings
+            )
 
         return engine
     
