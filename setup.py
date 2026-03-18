@@ -31,5 +31,12 @@ with open("whisper_trt/__version__.py") as f:
 setup(
     name="whisper_trt",
     version=__version__,
-    packages=find_packages()
+    packages=find_packages(),
+    install_requires=[
+        'openai-whisper',
+        'torch',
+        'torch2trt',
+        'numpy',
+        'psutil',
+    ],
 )
