@@ -20,8 +20,12 @@
 # DEALINGS IN THE SOFTWARE.
 
 
+import re
 from setuptools import setup, find_packages
-from whisper_trt.__version__ import __version__
+
+# Read version without importing the package (which has runtime deps)
+with open("whisper_trt/__version__.py") as f:
+    __version__ = re.search(r'__version__\s*=\s*"(.+)"', f.read()).group(1)
 
 
 setup(
